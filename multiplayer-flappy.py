@@ -1,31 +1,31 @@
-from itertools import cycle
 import random
-
-import pygame
-from pygame.locals import *
-import socket
 import sys
-from _thread import *
+import pygame
+import socket
 import time
+
+from _thread import *
+from pygame.locals import *
 from datetime import datetime
+from itertools import cycle
 
+broadcast_port = 8080
 HOST = ''
-SEND_PORT = 0
-RECV_PORT = 0
-ID = 0
-isServer = False
+my_send_tcp_port = 0
+my_rcv_tcp_port = 0
+my_player_id = 0
+players_count = 1
+isMyTimeout = False
+someoneTimedOut = False
+noOneTimedOut = False
+receivedAll = False
+lost = False
+otherScores = []
+send_connections = []
+rcv_connections = []
+scores = []
+my_score = 0
 
-# ToDo: Added
-someone_still_playing = True
-my_gameover = False
-
-broadcast_port = 8888
-player2_ip = 0
-player2_send_port = 0
-player2_recv_port = 0
-player2_score = 0
-recv_score_socket = None
-send_score_socket = None
 FPS = 30
 SCREENWIDTH = 288
 SCREENHEIGHT = 512
@@ -33,6 +33,7 @@ PIPEGAPSIZE = 100  # gap between upper and lower part of pipe
 BASEY = SCREENHEIGHT * 0.79
 # image, sound and hitmask  dicts
 IMAGES, SOUNDS, HITMASKS = {}, {}, {}
+
 # list of all possible players (tuple of 3 positions of flap)
 PLAYERS_LIST = (
     # red bird
@@ -74,13 +75,25 @@ except NameError:
 
 
 def main():
-    global SCREEN, FPSCLOCK, HOST
+    global SCREEN, FPSCLOCK
     pygame.init()
     FPSCLOCK = pygame.time.Clock()
     SCREEN = pygame.display.set_mode((SCREENWIDTH, SCREENHEIGHT))
     pygame.display.set_caption('Flappy Bird')
 
+    # global variables
+    global my_send_tcp_port, my_rcv_tcp_port, my_player_id, HOST, players_count
+
     HOST = socket.gethostbyname_ex('')[-1][-1]
+    print("my ip-address: ", HOST)
+    # set my send and receive port numbers and player id randomly
+    random.seed(datetime.now())
+    my_send_tcp_port = random.randint(2 ** 10, 2 ** 16)
+    my_rcv_tcp_port = random.randint(2 ** 10, 2 ** 16)
+    my_player_id = random.randint(10, 100)
+
+    start_new_thread(listen_thread, ())
+    start_new_thread(peer_discovery_thread, ())
 
     # numbers sprites for score display
     IMAGES['numbers'] = (
@@ -102,12 +115,6 @@ def main():
     IMAGES['message'] = pygame.image.load('assets/sprites/message.png').convert_alpha()
     # base (ground) sprite
     IMAGES['base'] = pygame.image.load('assets/sprites/base.png').convert_alpha()
-    # winner sprite
-    IMAGES['winner'] = pygame.image.load('assets/sprites/winner.png').convert_alpha()
-    # loser sprite
-    IMAGES['loser'] = pygame.image.load('assets/sprites/loser.png').convert_alpha()
-    # tie sprite
-    IMAGES['tie'] = pygame.image.load('assets/sprites/tie.png').convert_alpha()
 
     # sounds
     if 'win' in sys.platform:
@@ -121,6 +128,8 @@ def main():
     SOUNDS['swoosh'] = pygame.mixer.Sound('assets/audio/swoosh' + soundExt)
     SOUNDS['wing'] = pygame.mixer.Sound('assets/audio/wing' + soundExt)
 
+    # the first player who starts counting time will send the timeout message
+    start_new_thread(timeout_thread, ())
     while True:
         # select random background sprites
         randBg = random.randint(0, len(BACKGROUNDS_LIST) - 1)
@@ -155,29 +164,25 @@ def main():
             getHitmask(IMAGES['player'][2]),
         )
 
-        # random generator that uses the timestamp
-        random.seed(datetime.now())
-        # generate a random sending port number
-        global SEND_PORT
-        SEND_PORT = random.randint(2 ** 10, 2 ** 16)
-        print(SEND_PORT)
-        # generate a random receiving port number
-        global RECV_PORT
-        RECV_PORT = random.randint(2 ** 10, 2 ** 16)
-        print(RECV_PORT)
-        # generate random player id
-        global ID
-        ID = random.randint(10, 100)
+        if players_count > 2:
+            movementInfo = showWelcomeAnimation()
 
-        movementInfo = showWelcomeAnimation()
-        crashInfo = mainGame(movementInfo)
+            crashInfo = mainGame(movementInfo)
+            showGameOverScreen(crashInfo)
 
-        showGameOverScreen(crashInfo)
+
+def timeout_thread():
+    global isMyTimeOut, my_score, lost
+    # a game is 60 seconds
+    time.sleep(30)
+    isMyTimeOut = True
+    # todo: send timeout message to all players
+    if not lost:
+        send_score(my_score, send_timeout=True)
 
 
 def showWelcomeAnimation():
     """Shows welcome screen animation of flappy bird"""
-
     # index of player to blit on screen
     playerIndex = 0
     playerIndexGen = cycle([0, 1, 2, 1])
@@ -197,21 +202,19 @@ def showWelcomeAnimation():
     # player shm for up-down motion on welcome screen
     playerShmVals = {'val': 0, 'dir': 1}
 
-    Connect_to_second_player()
-
     while True:
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 pygame.quit()
                 sys.exit()
-            # if event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP):
-            # make first flap sound and return values for mainGame
-            SOUNDS['wing'].play()
-            return {
-                'playery': playery + playerShmVals['val'],
-                'basex': basex,
-                'playerIndexGen': playerIndexGen,
-            }
+            if event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP):
+                # make first flap sound and return values for mainGame
+                SOUNDS['wing'].play()
+                return {
+                    'playery': playery + playerShmVals['val'],
+                    'basex': basex,
+                    'playerIndexGen': playerIndexGen,
+                }
 
         # adjust playery, playerIndex, basex
         if (loopIter + 1) % 5 == 0:
@@ -232,10 +235,6 @@ def showWelcomeAnimation():
 
 
 def mainGame(movementInfo):
-
-    # ToDo Added
-    global someone_still_playing
-
     score = playerIndex = loopIter = 0
     playerIndexGen = movementInfo['playerIndexGen']
     playerx, playery = int(SCREENWIDTH * 0.2), movementInfo['playery']
@@ -304,6 +303,8 @@ def mainGame(movementInfo):
             pipeMidPos = pipe['x'] + IMAGES['pipe'][0].get_width() / 2
             if pipeMidPos <= playerMidPos < pipeMidPos + 4:
                 score += 1
+                global my_score
+                my_score = score
                 SOUNDS['point'].play()
 
         # playerIndex basex change
@@ -355,11 +356,8 @@ def mainGame(movementInfo):
         # print score so player overlaps the score
         showScore(score)
 
-        # ToDo: Added
-        if someone_still_playing:
-            start_new_thread(send_Score, (score,))
+        show_win_lose()
 
-        showOtherScore()
         # Player rotation has a threshold
         visibleRot = playerRotThr
         if playerRot <= playerRotThr:
@@ -374,11 +372,6 @@ def mainGame(movementInfo):
 
 def showGameOverScreen(crashInfo):
     """crashes the player down ans shows gameover image"""
-
-    # ToDo: Added
-    global someone_still_playing
-    global my_gameover
-
     score = crashInfo['score']
     playerx = SCREENWIDTH * 0.2
     playery = crashInfo['y']
@@ -395,7 +388,10 @@ def showGameOverScreen(crashInfo):
     # play hit and die sounds
     SOUNDS['hit'].play()
     if not crashInfo['groundCrash']:
+        send_score(score)
         SOUNDS['die'].play()
+        global lost
+        lost = True
 
     while True:
         for event in pygame.event.get():
@@ -429,13 +425,8 @@ def showGameOverScreen(crashInfo):
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
         showScore(score)
 
-        #  ToDo: Added game has ended parameter
-        if someone_still_playing and not my_gameover:
-            start_new_thread(send_Score, (score, True,))
-        my_gameover = True
-        show_win_lose(score)
-
-        showOtherScore()
+        # todo show win lose here
+        show_win_lose()
 
         playerSurface = pygame.transform.rotate(IMAGES['player'][1], playerRot)
         SCREEN.blit(playerSurface, (playerx, playery))
@@ -443,18 +434,7 @@ def showGameOverScreen(crashInfo):
 
         FPSCLOCK.tick(FPS)
         pygame.display.update()
-        # start_new_thread(close_connections, ())
 
-
-# ToDo: Added
-def show_win_lose(score):
-
-    if score < player2_score:
-        SCREEN.blit(IMAGES['loser'], (50, 180))
-    elif score > player2_score:
-        SCREEN.blit(IMAGES['winner'], (50, 180))
-    else:
-        SCREEN.blit(IMAGES['tie'], (50, 180))
 
 def playerShm(playerShm):
     """oscillates the value of playerShm['val'] between 8 and -8"""
@@ -493,21 +473,6 @@ def showScore(score):
 
     for digit in scoreDigits:
         SCREEN.blit(IMAGES['numbers'][digit], (Xoffset, SCREENHEIGHT * 0.1))
-        Xoffset += IMAGES['numbers'][digit].get_width()
-
-
-def showOtherScore():
-    """displays score in center of screen"""
-    scoreDigits = [int(x) for x in list(str(player2_score))]
-    totalWidth = 0  # total width of all numbers to be printed
-
-    for digit in scoreDigits:
-        totalWidth += IMAGES['numbers'][digit].get_width()
-
-    Xoffset = (SCREENWIDTH - totalWidth) / 2
-
-    for digit in scoreDigits:
-        SCREEN.blit(IMAGES['numbers'][digit], (Xoffset, SCREENHEIGHT * 0.9))
         Xoffset += IMAGES['numbers'][digit].get_width()
 
 
@@ -574,160 +539,153 @@ def getHitmask(image):
     return mask
 
 
-def Connect_to_second_player():
-    global HOST
-    # create a UDP socket for broadcasting
+def peer_discovery_thread():
+    # global variables
+    global broadcast_port, my_send_tcp_port, my_rcv_tcp_port, my_player_id, players_count
+    global send_connections, rcv_connections, HOST
+
+    # create a UDP socket for broadcasting, let it reuse the port number and turn on broadcasts
     my_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     my_udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     my_udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # raise exception if it did not recieve any data
-    # my_udp_socket.setblocking(0)
+
+    # todo: ip address used here
     my_udp_socket.bind((HOST, broadcast_port))
-    # global PORT
-    my_udp_socket.settimeout(10)
-    # broadcast message
-    msg = 'Player ' + str(ID) + ' connect with me via port ' + str(SEND_PORT) + ' and port ' + str(RECV_PORT)
 
-    global player2_ip, player2_send_port, player2_id, player2_recv_port
-    # my_socket.sendto(msg.encode(),('<broadcast>',8888))
-    global isServer
-    print('sending broadcast: ' + msg)
-    my_udp_socket.sendto(msg.encode(), ('255.255.255.255', broadcast_port))
-    print("trying to receive broadcast")
+    broadcast_msg = "broadcast ==> player: " + str(my_player_id) + " send to me on port " + str(my_rcv_tcp_port)
+    broadcast_msg += " and receive from me on port " + str(my_send_tcp_port)
+
+    # first thing a player will send a broadcast message to all other players on the network
+    my_udp_socket.sendto(broadcast_msg.encode(), ('255.255.255.255', broadcast_port))
+    print("SENT MESSAGE: ", broadcast_msg)
+
+    # then the player will keep receiving from other players either their broadcast message or their confirmation
+    # message to his broadcast. if he receives a broadcast message from other player he'll send a confirmation
+    # back and try to start the tcp connections. else, if he receives a confirmation then there must be some
+    # other player(s) who received his broadcast message and is/are trying to connect to him
+    while True:
+        received_msg, address = my_udp_socket.recvfrom(4096)
+        received_msg = str(received_msg.decode())
+
+        # ignore if the message is a broadcast from yourself
+        if str(my_player_id) not in received_msg.split()[3]:
+            print("RECEIVED MESSAGE: ", received_msg)
+            print("FROM: ", address)
+
+            # if it's a broadcast message from another player send a confirmation and request tcp connections from
+            # him
+            if "broadcast" in received_msg:
+                other_player_id = int(received_msg.split()[3])
+                other_player_ip = address[0]
+                other_player_rcv_port = int(received_msg.split()[-8])
+                other_player_send_port = int(received_msg.split()[-1])
+
+                # send a confirmation back
+                confirmation_msg = "confirmation ==> player: " + str(my_player_id) + " confirms receipt to "
+                confirmation_msg += str(other_player_id)
+                my_udp_socket.sendto(confirmation_msg.encode(), ('<broadcast>', broadcast_port))
+                print("SENT CONFIRMATION")
+
+                # create two sockets one for sending and one for receiving
+                my_send_tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                my_rcv_tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+                # send to the other player's receive port and receive from the other player's send port
+                print("send connection requested from: ", (other_player_ip, other_player_rcv_port))
+                my_send_tcp_socket.connect((other_player_ip, other_player_rcv_port))
+                print("receive connection requested from: ", (other_player_ip, other_player_send_port))
+                my_rcv_tcp_socket.connect((other_player_ip, other_player_send_port))
+
+                # append to the saved connections
+                send_connections.append(my_send_tcp_socket)
+                rcv_connections.append(my_rcv_tcp_socket)
+
+                print("connections established with player " + str(other_player_id))
+                players_count += 1
+                print("players count: ", players_count)
+
+            elif "confirmation" in received_msg and str(my_player_id) in received_msg.split()[-1]:
+                # if it's a confirmation message from another player to me then listen for connection requests
+                # listen for the other player tcp connection request
+                print("received confirmation")
+
+
+def listen_thread():
+    global HOST, players_count, send_connections, rcv_connections
+
+    # create two sockets one for sending and one for receiving
+    my_send_tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    my_rcv_tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    # listen for connection requests maximum 9 other players
+    # todo: ip address used here
+    my_rcv_tcp_socket.bind((HOST, my_rcv_tcp_port))
+    my_rcv_tcp_socket.listen(5)
+    my_send_tcp_socket.bind((HOST, my_send_tcp_port))
+    my_send_tcp_socket.listen(5)
+
+    while True:
+        # other player will send you on your receive port
+        other_rcv_conn, other_player_rcv_addr = my_rcv_tcp_socket.accept()
+        print("receive connection granted to: ", other_player_rcv_addr)
+        rcv_connections.append(other_rcv_conn)
+
+        # other player will receive from your send port
+        other_send_conn, other_player_send_addr = my_send_tcp_socket.accept()
+        print("send connection granted to: ", other_player_send_addr)
+        send_connections.append(other_send_conn)
+
+        players_count += 1
+        print("players count: ", players_count)
+
+
+def send_score(score, send_timeout=False):
+    global send_connections, someoneTimedOut
+
     try:
-        while True:
-            data, address = my_udp_socket.recvfrom(4096)
-            data = str(data.decode())
-            print("data received: ", data)
-            if (int(data.split(' ')[-1]) != RECV_PORT):
-                if (data.startswith("Player")):
-                    isServer = False
-                    player2_recv_port = int(data.split(' ')[-1])
-                    player2_send_port = int(data.split(' ')[-4])
-                    player2_ip = address[0]
-                    player2_id = data.split(' ')[1]
-                    my_udp_socket.sendto(msg.encode(), address)
-                    print('player 2 ip:', player2_ip, " port: ", player2_send_port)
-                    time.sleep(10)
-                    break
-
-
-    except socket.timeout:
-        # If no data is received, you get here, but it's not an error
-        # Ignore and continue
-        print('received nothing')
-        isServer = True
-        pass
-
-    global send_score_socket
-    global recv_score_socket
-    # create two sockets one for sending the score and one for receiving the other player's score
-    recv_score_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    send_score_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    if isServer:
-
-        print('sending broadcast: ' + msg)
-        my_udp_socket.sendto(msg.encode(), ('255.255.255.255', broadcast_port))
-        print("trying to receive broadcast")
-
-        print("at is server")
-        # listen for the other player tcp connection request
-        recv_score_socket.bind((HOST, RECV_PORT))
-        recv_score_socket.listen(1)
-
-        send_score_socket.bind((HOST, SEND_PORT))
-        send_score_socket.listen(1)
-
-        print("here")
-        player2_send_conn, player2_send_addr = recv_score_socket.accept()
-        print("here2")
-        player2_ip = player2_send_addr[0]
-        player2_send_port = player2_send_addr[1]
-        print('Connection for receiving established with ', player2_send_addr[0], ' with port = ', player2_send_port)
-        recv_score_socket = player2_send_conn
-
-        player2_recv_conn, player2_recv_addr = send_score_socket.accept()
-        player2_ip = player2_recv_addr[0]
-        player2_recv_port = player2_recv_addr[1]
-        print('Connection for receiving established with ', player2_recv_addr[0], ' with port = ', player2_recv_port)
-        # start the sending thread
-        send_score_socket = player2_recv_conn
-
-
-    else:
-        print("at is client")
-        # initiate the connection with the other player
-        send_score_socket.connect((player2_ip, player2_recv_port))
-        print("Connection for sending initiated with player : ", player2_id)
-
-        recv_score_socket.connect((player2_ip, player2_send_port))
-        print("Connection for receiving initiated with player : ", player2_id)
-
-    start_new_thread(recv_thread, ())
-
-
-def recv_thread():
-    while get_score():
-        continue
-
-
-def get_score():
-    global player2_score
-    global someone_still_playing
-    global my_gameover
-    try:
-        score = recv_score_socket.recv(1024).decode()
-        if "score" in score:
-            print("score received: ", score)
-            player2_score = int(score.split()[-1])  # message format score: 10
-            return True
-
-        # ToDo: Added
-        elif "ended" in score:
-            someone_still_playing = False
-            recv_score_socket.close()
-            print("player to has ended message received and receive socket successfully closed")
-            return False
-
-    except socket.timeout:
-        print("timed out")
-        return False
-        pass
-    except socket.error:
-        print("disconnected")
-        return False
-
-#  ToDo: Added
-def send_Score(score, is_ended=False):
-    global send_score_socket
-    global someone_still_playing
-    global my_gameover
-    msg = "score: " + str(score)
-    try:
-        if not is_ended:
-            send_score_socket.send(msg.encode())
-            # print("score sent")
-        else:
-            msg = "my game has ended score: " + str(score)
-            send_score_socket.send(msg.encode())
-            print("last message: I finished message sent")
-            send_score_socket.close()
-            print("send score socket successfully closed")
+        if not someoneTimedOut:
+            if not send_timeout:
+                msg = "score: " + str(score)
+                for send_connection in send_connections:
+                    send_connection.send(msg.encode())
+                print("I sent a message to all")
+            else:
+                msg = "(timeout) score: " + str(score)
+                for send_connection in send_connections:
+                    send_connection.send(msg.encode())
+                print("I sent a timeout to all")
     except socket.error:
         print("send score socket disconnected")
 
 
-def close_connections():
-    recv_score_socket.close()
-    send_score_socket.close()
+def get_scores_thread():
+    global rcv_connections, someoneTimedOut, noOneTimedOut, receivedAll
+    local_boolean = False  # to finish receiving from all
+
+    for rcv_connection in rcv_connections:
+        message = rcv_connection.recv(1024).decode()
+        print("received message: ", message)
+        scores.append(int(message.split()[-1]))
+        if "(timeout)" in message:
+            local_boolean = False
+
+    someoneTimedOut = local_boolean
+    receivedAll = True
+    print("I received from all players")
+    if not someoneTimedOut:
+        noOneTimedOut = True
+    else:
+        print("I received a timeout")
 
 
-"""def sendScoreTCP(score):
-    score_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    score_socket.connect((player_ip, player_port))
-    msg = str(score)
-    score_socket.send(msg)"""
+def show_win_lose():
+    global receivedAll, my_score
+    if receivedAll:
+        if my_score >= max(scores):
+            SCREEN.blit(IMAGES['winner'], (50, 180))
+        else:
+            SCREEN.blit(IMAGES['loser'], (50, 180))
+
 
 if __name__ == '__main__':
     main()

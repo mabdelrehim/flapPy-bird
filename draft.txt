@@ -1,0 +1,57 @@
+def receiveScoreTCP():
+    score_rcv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    score_rcv_socket.connect((player_ip, int(player_port)))
+    score_rcv_socket.settimeout(2)
+    rcv_score = -1
+    try:
+        rcv_score = int(score_rcv_socket.recv(1024).decode())
+    except socket.timeout:
+        print("other player did not send score")
+        score_rcv_socket.close()
+
+    print("rcv_score: ", rcv_score)
+    return rcv_score
+
+
+
+
+def showScore(score, other=-1):
+
+    if other == -1:
+        """displays score in center of screen"""
+        scoreDigits = [int(x) for x in list(str(score))]
+        totalWidth = 0  # total width of all numbers to be printed
+
+        for digit in scoreDigits:
+            totalWidth += IMAGES['numbers'][digit].get_width()
+
+        myXoffset = (SCREENWIDTH - totalWidth) / 2
+
+        for digit in scoreDigits:
+            SCREEN.blit(IMAGES['numbers'][digit], (myXoffset, SCREENHEIGHT * 0.1))
+            myXoffset += IMAGES['numbers'][digit].get_width()
+    else:
+        """displays score in center of screen"""
+        scoreDigits = [int(x) for x in list(str(score))]
+        other_digits = [int(x) for x in list(str(other))]
+
+        totalWidth = 0  # total width of all numbers to be printed
+        other_totalWidth = 0  # total width of all numbers to be printed
+
+        for digit in scoreDigits:
+            totalWidth += IMAGES['numbers'][digit].get_width()
+
+        for digit in other_digits:
+            other_totalWidth += IMAGES['numbers'][digit].get_width()
+
+        myXoffset = (SCREENWIDTH - totalWidth) / 2
+        my_other_Xoffset = (SCREENWIDTH - totalWidth) / 2
+
+        for digit in scoreDigits:
+            SCREEN.blit(IMAGES['numbers'][digit], (myXoffset, SCREENHEIGHT * 0.1))
+            myXoffset += IMAGES['numbers'][digit].get_width()
+
+        for digit in scoreDigits:
+            SCREEN.blit(IMAGES['numbers'][digit], (my_other_Xoffset, SCREENHEIGHT * 0.9))
+            my_other_Xoffset += IMAGES['numbers'][digit].get_width()
+

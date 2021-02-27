@@ -74,13 +74,11 @@ except NameError:
 
 
 def main():
-    global SCREEN, FPSCLOCK, HOST
+    global SCREEN, FPSCLOCK
     pygame.init()
     FPSCLOCK = pygame.time.Clock()
     SCREEN = pygame.display.set_mode((SCREENWIDTH, SCREENHEIGHT))
     pygame.display.set_caption('Flappy Bird')
-
-    HOST = socket.gethostbyname_ex('')[-1][-1]
 
     # numbers sprites for score display
     IMAGES['numbers'] = (
@@ -155,6 +153,10 @@ def main():
             getHitmask(IMAGES['player'][2]),
         )
 
+        global HOST
+        HOST = socket.gethostbyname_ex('')
+        HOST = HOST[-1][-1]
+        print(HOST)
         # random generator that uses the timestamp
         random.seed(datetime.now())
         # generate a random sending port number
@@ -575,7 +577,6 @@ def getHitmask(image):
 
 
 def Connect_to_second_player():
-    global HOST
     # create a UDP socket for broadcasting
     my_udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     my_udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -591,9 +592,7 @@ def Connect_to_second_player():
     global player2_ip, player2_send_port, player2_id, player2_recv_port
     # my_socket.sendto(msg.encode(),('<broadcast>',8888))
     global isServer
-    print('sending broadcast: ' + msg)
-    my_udp_socket.sendto(msg.encode(), ('255.255.255.255', broadcast_port))
-    print("trying to receive broadcast")
+
     try:
         while True:
             data, address = my_udp_socket.recvfrom(4096)
@@ -608,7 +607,7 @@ def Connect_to_second_player():
                     player2_id = data.split(' ')[1]
                     my_udp_socket.sendto(msg.encode(), address)
                     print('player 2 ip:', player2_ip, " port: ", player2_send_port)
-                    time.sleep(10)
+                    time.sleep(10 )
                     break
 
 
@@ -619,33 +618,34 @@ def Connect_to_second_player():
         isServer = True
         pass
 
+
     global send_score_socket
     global recv_score_socket
-    # create two sockets one for sending the score and one for receiving the other player's score
+    # create two sockets one for sending the score and one for receiving the other okayer's score
     recv_score_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     send_score_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     if isServer:
-
+        # listen for the other player tcp connection request
+        print('server')
         print('sending broadcast: ' + msg)
         my_udp_socket.sendto(msg.encode(), ('255.255.255.255', broadcast_port))
         print("trying to receive broadcast")
-
-        print("at is server")
-        # listen for the other player tcp connection request
         recv_score_socket.bind((HOST, RECV_PORT))
         recv_score_socket.listen(1)
 
         send_score_socket.bind((HOST, SEND_PORT))
         send_score_socket.listen(1)
 
-        print("here")
+        print('bla1')
+
         player2_send_conn, player2_send_addr = recv_score_socket.accept()
-        print("here2")
         player2_ip = player2_send_addr[0]
         player2_send_port = player2_send_addr[1]
         print('Connection for receiving established with ', player2_send_addr[0], ' with port = ', player2_send_port)
         recv_score_socket = player2_send_conn
+
+        print('bla2')
 
         player2_recv_conn, player2_recv_addr = send_score_socket.accept()
         player2_ip = player2_recv_addr[0]
@@ -656,8 +656,9 @@ def Connect_to_second_player():
 
 
     else:
-        print("at is client")
+        print("client")
         # initiate the connection with the other player
+        print(player2_ip)
         send_score_socket.connect((player2_ip, player2_recv_port))
         print("Connection for sending initiated with player : ", player2_id)
 
