@@ -9,6 +9,7 @@ Contributers:
 Mohamed Abdelrehim
 Yasmine Medhat
 Loujaina Ragheb
+Ahmad Beltagy
 
 How-to (as tested on MacOS)
 ---------------------------
